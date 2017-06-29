@@ -343,6 +343,7 @@ var Edge = function(ID) {
   this.Child = '';
   this.Metadata = {};
   this.Visible = true;
+  this.Type = '';
 };
 
 var Graph = function(ID) {
@@ -508,7 +509,10 @@ var TopologyLayout = function(vm, selector) {
     .size([this.width, this.height])
     .charge(-400)
     .gravity(0.02)
-    .linkStrength(0.5)
+    //.linkStrength(0.5)
+    .linkStrength(function(d, i) {
+      return _this.LinkStrength(d, i);
+    })
     .friction(0.8)
     .linkDistance(function(d, i) {
       return _this.LinkDistance(d, i);
@@ -570,6 +574,17 @@ var TopologyLayout = function(vm, selector) {
         self.refreshLinksInterval = setInterval(self.RefreshLinks.bind(self), self.bandwidth.updatePeriod);
       });
 };
+
+TopologyLayout.prototype.LinkStrength = function(d, i) {
+  var strength = 0.8;
+
+  if (d.source.Metadata.Type == "device" && d.target.Metadata.Type == "device") {
+    strength = 0.2;
+  }
+
+  return strength;
+};
+
 
 TopologyLayout.prototype.LinkDistance = function(d, i) {
   var distance = 60;
@@ -985,7 +1000,11 @@ TopologyLayout.prototype.ParentNodeForGroup = function(node) {
       case "netns":
         return edge.Parent;
       default:
-        parent = edge.Parent;
+        //if (edge.Parent.Metadata.Type != "host" && edge.Metadata.RelationType == "layer2" || edge.Type == "collapseEdge") {
+        if (edge.Metadata.RelationType == "layer2") {
+        } else {
+          parent = edge.Parent;
+        }
     }
   }
 
@@ -1010,7 +1029,7 @@ TopologyLayout.prototype.AddNodeToGroup = function(ID, type, node, groups) {
   // padding around group path
   var pad = 24;
   if (group.Type == "host" || group.Type == "vm")
-    pad = 48;
+    pad = 28;
   if (group.Type == "fabric")
     pad = 60;
 
@@ -1142,8 +1161,19 @@ TopologyLayout.prototype.CollapseHost = function(hostNode) {
     if (node.Host != hostNode.Host)
       continue;
 
-    if (node == hostNode)
+    if (node == hostNode) {
+      if (!isCollapsed) {
+        for (var x in node.Edges) {
+          var collapseEdge = node.Edges[x];
+
+          if (collapseEdge.Type == "collapseEdge") {
+            this.graph.DelEdge(collapseEdge);
+            this.deferredActions.push({fn: this.DelEdge, params: [collapseEdge]});
+          }
+        }
+      }
       continue;
+    }
 
     // All edges (connected to all nodes in the group)
     for (var j in node.Edges) {
@@ -1169,6 +1199,108 @@ TopologyLayout.prototype.CollapseHost = function(hostNode) {
       }
 
       edge.Visible = isCollapsed ? false : true;
+
+      if (isCollapsed) {
+        edge.Visible = false;
+        if (edge.Metadata.RelationType == "layer2") {
+          if (edge.Type == "collapseEdge") {
+            var newId2 = edge.ID + "2"
+            if (newId2 in this.elements) {
+              continue;
+            }
+            if (edge.Parent == node) {
+              var collapseEdgeNew = this.graph.NewEdge(newId2, hostNode, edge.Child);
+              if ("Metadata" in edge) {
+                collapseEdgeNew.Metadata = edge.Metadata;
+              }
+              collapseEdgeNew.Type = "collapseEdge"
+              this.elements[newId2] = collapseEdgeNew;
+              this.links.push({source: hostNode, target: edge.Child, edge: collapseEdgeNew});
+            } else {
+              var collapseEdgeNew1 = this.graph.NewEdge(newId2, edge.Parent, hostNode);
+              if ("Metadata" in edge) {
+                collapseEdgeNew1.Metadata = edge.Metadata;
+              }
+              collapseEdgeNew1.Type = "collapseEdge"
+              this.elements[newId2] = collapseEdgeNew1;
+              this.links.push({source: edge.Parent, target: hostNode, edge: collapseEdgeNew1});
+            }
+            /* delete the old edge with other collapsed node */
+            this.graph.DelEdge(edge);
+            this.deferredActions.push({fn: this.DelEdge, params: [edge]});
+
+          } else {
+            var newId = edge.ID + "-collapse"
+            if (newId in this.elements) {
+              continue;
+            }
+
+            if (edge.Parent == node) {
+              var edgeNew = this.graph.NewEdge(newId, hostNode, edge.Child);
+              if ("Metadata" in edge) {
+                edgeNew.Metadata = edge.Metadata;
+              }
+              edgeNew.Type = "collapseEdge"
+              this.elements[newId] = edgeNew;
+              this.links.push({source: hostNode, target: edge.Child, edge: edgeNew});
+            } else {
+              var edgeNew1 = this.graph.NewEdge(newId, edge.Parent, hostNode);
+              if ("Metadata" in edge) {
+                edgeNew1.Metadata = edge.Metadata;
+              }
+              edgeNew1.Type = "collapseEdge"
+              this.elements[newId] = edgeNew1;
+              this.links.push({source: edge.Parent, target: hostNode, edge: edgeNew1});
+            }
+          }
+        }
+
+          /*
+        edge = this.graph.NewEdge(msg.Obj.ID, parent, child, msg.Obj.Host);
+        if ("Metadata" in msg.Obj)
+          edge.Metadata = msg.Obj.Metadata;
+
+        this.deferredActions.push({fn: this.AddEdge, params: [edge]});
+        */
+      } else {
+        if (edge.Metadata.RelationType == "layer2") {
+          if (edge.Parent == node) {
+            if (!edge.Child.Visible) {
+              edge.Visible = false;
+              var newId = edge.ID + "-collapse"
+              if (newId in this.elements) {
+                continue;
+              }
+
+              var peerHost = this.ParentNodeForGroup(edge.Child);
+              var edgeNew = this.graph.NewEdge(newId, node, peerHost);
+              if ("Metadata" in edge) {
+                edgeNew.Metadata = edge.Metadata;
+              }
+              edgeNew.Type = "collapseEdge"
+              this.elements[newId] = edgeNew;
+              this.links.push({source: node, target: peerHost, edge: edgeNew});
+            }
+          } else {
+            if (!edge.Parent.Visible) {
+              edge.Visible = false;
+              var newId = edge.ID + "-collapse"
+              if (newId in this.elements) {
+                continue;
+              }
+
+              var peerHost = this.ParentNodeForGroup(edge.Parent);
+              var edgeNew = this.graph.NewEdge(newId, peerHost, node);
+              if ("Metadata" in edge) {
+                edgeNew.Metadata = edge.Metadata;
+              }
+              edgeNew.Type = "collapseEdge"
+              this.elements[newId] = edgeNew;
+              this.links.push({source: peerHost, target: node, edge: edgeNew});
+            }
+          }
+        }
+      }
     }
 
     if (node == fabricNode)
